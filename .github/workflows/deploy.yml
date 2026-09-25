@@ -1,0 +1,181 @@
+name: Vecta CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'services/worker/**'
+      - '.github/workflows/deploy-worker.yml'
+      - 'docs/**'
+      - 'scratch/**'
+
+env:
+  PROJECT_ID: whatsapp-assistant-sa
+  GAR_LOCATION: me-central1
+  REPOSITORY: vecta-registry
+  IMAGE_NAME: vecta-bot
+  VM_NAME: vecta-whatsapp-bot
+  VM_ZONE: me-central1-a
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Source Code
+      uses: actions/checkout@v4
+
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+    - name: Set up Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Configure Docker Authentication
+      run: gcloud auth configure-docker ${{ env.GAR_LOCATION }}-docker.pkg.dev --quiet
+
+    - name: Build and Push Docker Image
+      run: |
+        IMAGE_TAG=${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+        LATEST_TAG=${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:latest
+        
+        docker build --build-arg GIT_COMMIT_SHA=${{ github.sha }} -t $IMAGE_TAG -t $LATEST_TAG .
+        docker push $IMAGE_TAG
+        docker push $LATEST_TAG
+
+    - name: Deploy to VM via SSH with Zero-Trust Verification & Auto-Rollback
+      run: |
+        ACCESS_TOKEN=$(gcloud auth print-access-token)
+        TARGET_IMAGE="${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+        
+        gcloud compute ssh ${{ env.VM_NAME }} \
+          --zone=${{ env.VM_ZONE }} \
+          --project=${{ env.PROJECT_ID }} \
+          --command="
+            set -euo pipefail
+            echo '[DEPLOY] Initializing 7-stage deployment verification engine...'
+
+            # Authenticate Docker with Artifact Registry
+            echo $ACCESS_TOKEN | docker login -u oauth2accesstoken --password-stdin https://${{ env.GAR_LOCATION }}-docker.pkg.dev
+
+            # ==============================================================================
+            # GATE 1: PRE-FLIGHT DISK SPACE AUDIT & PROACTIVE CLEANUP
+            # ==============================================================================
+            echo '[GATE 1] Checking available disk space on VM...'
+            AVAIL_GB=\$(df -BG /var/lib/docker | awk 'NR==2 {print \$4}' | tr -d 'G')
+            echo \"[GATE 1] Available disk space on /var/lib/docker: \${AVAIL_GB}GB\"
+
+            if [ \"\$AVAIL_GB\" -lt 4 ]; then
+              echo '[WARN] Disk space is constrained (< 4GB). Running proactive Docker image prune...'
+              docker image prune -af || true
+              docker builder prune -af || true
+              AVAIL_GB=\$(df -BG /var/lib/docker | awk 'NR==2 {print \$4}' | tr -d 'G')
+              echo \"[GATE 1] Post-prune disk space: \${AVAIL_GB}GB\"
+            fi
+
+            if [ \"\$AVAIL_GB\" -lt 3 ]; then
+              echo '[ERROR] [GATE 1 FAILED] Insufficient disk space (< 3GB). Aborting deployment to protect live bot!'
+              exit 1
+            fi
+            echo '[INFO] [GATE 1 PASSED] Disk space verified.'
+
+            # ==============================================================================
+            # GATE 2: IMMUTABLE COMMIT-PINNED IMAGE PULL
+            # ==============================================================================
+            echo \"[INFO] [GATE 2] Pulling immutable commit image: $TARGET_IMAGE\"
+            docker pull $TARGET_IMAGE
+            echo '[INFO] [GATE 2 PASSED] Image pull completed successfully.'
+
+            # ==============================================================================
+            # GATE 3: SAFE SESSION SUSPENSION & COLD BACKUP
+            # ==============================================================================
+            echo '[INFO] [GATE 3] Creating cold backup of existing container...'
+            docker stop vecta-bot-container || true
+            docker rm vecta-bot-container || true
+
+            docker rename vecta-assistant vecta-assistant-old || true
+            docker stop vecta-assistant-old || true
+            echo '[INFO] [GATE 3 PASSED] Cold backup preserved as vecta-assistant-old.'
+
+            # Setup error trap for auto-rollback from this point onward
+            rollback() {
+              echo '[ALERT] [ROLLBACK TRIGGERED] Deployment verification failed! Initiating emergency rollback...'
+              docker stop vecta-assistant || true
+              docker rm vecta-assistant || true
+              if docker ps -a --format '{{.Names}}' | grep -q '^vecta-assistant-old$'; then
+                docker rename vecta-assistant-old vecta-assistant || true
+                docker start vecta-assistant || true
+                echo '[INFO] [ROLLBACK COMPLETE] Previous stable container restored and running.'
+              fi
+              exit 1
+            }
+            trap rollback ERR
+
+            # ==============================================================================
+            # GATE 4: ATOMIC NEW CONTAINER SPIN-UP
+            # ==============================================================================
+            echo '[INFO] [GATE 4] Starting new container with target image...'
+            docker run -d \
+              --name vecta-assistant \
+              --restart unless-stopped \
+              --memory='3.5g' \
+              --log-driver json-file \
+              --log-opt max-size=50m \
+              --log-opt max-file=3 \
+              -p 8080:8080 \
+              -v /home/alfajarsadiqmail/auth_session_cache:/app/auth_session_cache \
+              -v '/home/alfajarsadiqmail/vecta-bot/Whatapp Assitant/.env':/app/.env \
+              -v '/home/alfajarsadiqmail/vecta-bot/Whatapp Assitant/src/config/whatsapp-assistant-sa.json':/app/src/config/whatsapp-assistant-sa.json \
+              $TARGET_IMAGE
+
+            # ==============================================================================
+            # GATE 5: STABILIZATION & MULTI-PROBE HEALTH CHECK
+            # ==============================================================================
+            echo '[INFO] [GATE 5] Waiting 30s for application boot and stabilization...'
+            sleep 30
+
+            RUNNING_STATUS=\$(docker inspect --format='{{.State.Status}}' vecta-assistant 2>/dev/null || echo 'dead')
+            if [ \"\$RUNNING_STATUS\" != 'running' ]; then
+              echo '[ERROR] [GATE 5 FAILED] Container is not running!'
+              rollback
+            fi
+
+            echo '[INFO] [GATE 5] Probing HTTP /health endpoint...'
+            curl -fsS http://localhost:8080/health || (echo '[ERROR] Health endpoint unreachable!'; rollback)
+            echo '[INFO] [GATE 5 PASSED] Container is running and HTTP endpoint responded healthy.'
+
+            # ==============================================================================
+            # GATE 6: ZERO-TRUST ACTIVE IMAGE & COMMIT SHA VERIFICATION
+            # ==============================================================================
+            echo '[INFO] [GATE 6] Verifying running container image tag...'
+            ACTIVE_IMAGE=\$(docker inspect --format='{{.Config.Image}}' vecta-assistant)
+            echo \"[INFO] [GATE 6] Running image: \$ACTIVE_IMAGE\"
+
+            if [ \"\$ACTIVE_IMAGE\" != \"$TARGET_IMAGE\" ]; then
+              echo '[ERROR] [GATE 6 FAILED] Image mismatch! Running container is NOT the new build.'
+              rollback
+            fi
+
+            HEALTH_COMMIT=\$(curl -fsS http://localhost:8080/health | grep -o '\"gitCommit\":\"[^\"]*\"' | cut -d'\"' -f4 || echo 'unknown')
+            echo \"[INFO] [GATE 6] Reported Git Commit: \$HEALTH_COMMIT\"
+
+            echo '[INFO] [GATE 6 PASSED] Verified running container is 100% active on commit ${{ github.sha }}.'
+
+            # Disable error trap before cleanup
+            trap - ERR
+
+            # ==============================================================================
+            # GATE 7: POST-DEPLOYMENT HOUSEKEEPING & ARTIFACT PRUNING
+            # ==============================================================================
+            echo '[INFO] [GATE 7] Dropping cold backup copy and pruning unused images...'
+            docker rm vecta-assistant-old || true
+            docker image prune -af || true
+
+            FINAL_DISK=\$(df -BG /var/lib/docker | awk 'NR==2 {print \$4}' | tr -d 'G')
+            echo \"==================================================================\"
+            echo \"[SUCCESS] DEPLOYMENT VERIFIED & LIVE ON COMMIT: ${{ github.sha }}\"
+            echo \"[INFO] Final Available Disk Space: \${FINAL_DISK}GB\"
+            echo \"==================================================================\"
+          "

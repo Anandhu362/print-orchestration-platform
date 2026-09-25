@@ -1,0 +1,61 @@
+name: Deploy Adspro Worker (Cloud Run)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'services/worker/**'
+      - 'src/shared/**'
+      - '.github/workflows/deploy-worker.yml'
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: whatsapp-assistant-sa
+  REGION: me-central1
+  REPOSITORY: adspro-registry
+  SERVICE_NAME: adspro-worker
+
+jobs:
+  build-and-deploy-worker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker Authentication
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and Push Cloud Run Image
+        run: |
+          IMAGE_TAG=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+          LATEST_TAG=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}:latest
+
+          docker build -t $IMAGE_TAG -t $LATEST_TAG ./services/worker
+          docker push $IMAGE_TAG
+          docker push $LATEST_TAG
+
+      - name: Deploy to Cloud Run (me-central1)
+        run: |
+          IMAGE_TAG=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image=$IMAGE_TAG \
+            --region=${{ env.REGION }} \
+            --memory=4Gi \
+            --cpu=2 \
+            --concurrency=10 \
+            --min-instances=0 \
+            --max-instances=10 \
+            --timeout=300 \
+            --no-allow-unauthenticated \
+            --update-env-vars="GCP_PROJECT_ID=${{ env.PROJECT_ID }},GCP_REGION=${{ env.REGION }},TZ=Asia/Dubai,ADSPRO_SHEET_ID=${{ secrets.ADSPRO_SHEET_ID }},FIREBASE_STORAGE_BUCKET=run-sources-whatsapp-assistant-sa-me-central1" \
+            --quiet

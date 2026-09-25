@@ -1,0 +1,41 @@
+# Ignore dependency folders (we will install fresh inside the container)
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Ignore local environment variables and secrets
+.env
+.env.*
+src/config/*.json
+*.pem
+*.key
+
+# Ignore Git history & CI configurations
+.git
+.gitignore
+.github
+
+# Ignore local builds & sessions
+dist
+auth_session_cache
+
+# Ignore heavy test assets, docs, and scratch scripts
+docs
+scratch
+Test files
+test files
+*.pdf
+*.png
+*.jpg
+*.jpeg
+
+# Ignore documentation & markdown files
+*.md
+
+# Ignore system & IDE files
+.DS_Store
+Thumbs.db
+.vscode
+.idea
+.config

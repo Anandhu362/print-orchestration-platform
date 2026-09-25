@@ -1,0 +1,38 @@
+{
+  "name": "print-orchestration-platform",
+  "version": "1.0.0",
+  "description": "Autonomous Print Orchestration Platform - Enterprise-grade WhatsApp workflow automation and Google Cloud Run worker offloading for commercial printing operations",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@hapi/boom": "^10.0.1",
+    "@types/pdf-parse": "^1.1.5",
+    "@whiskeysockets/baileys": "^6.6.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "firebase-admin": "^12.1.0",
+    "googleapis": "^173.0.0",
+    "link-preview-js": "^3.2.0",
+    "node-cron": "^4.2.1",
+    "pdf-lib": "^1.17.1",
+    "pdf-parse": "^2.4.5",
+    "pdf-to-png-converter": "^4.2.1",
+    "pino": "^9.1.0",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.12.12",
+    "@types/node-cron": "^3.0.11",
+    "tsx": "^4.10.5",
+    "typescript": "^5.4.5"
+  }
+}

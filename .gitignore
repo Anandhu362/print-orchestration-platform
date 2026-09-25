@@ -1,0 +1,51 @@
+# Dependencies
+node_modules/
+
+# Build Output
+dist/
+
+# Environment Variables & Secrets
+.env
+.env.*
+!.env.example
+
+# Service Account Keys & GCP Secrets
+src/config/*.json
+src/config/whatsapp-assistant-sa.json
+*.pem
+*.key
+
+# Persistent WhatsApp State & Cache
+auth_session_cache/
+
+# Development, Internal Documentation & Diagnostic Scratch Folders
+docs/
+scratch/
+
+# Test Files & Proprietary PDF Assets
+Test files/
+test files/
+*.pdf
+
+# Allow Proof of Work Images
+!images/
+!images/**
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# System & OS Artifacts
+.DS_Store
+Thumbs.db
+.config/
+
+# IDE & Editor Files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
